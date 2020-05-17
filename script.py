@@ -50,7 +50,7 @@ df.target_city.replace({"San Francisco / Bay Area": "San Francisco", "Philly": "
                         "Phoenix / Scottsdale": "Phoenix", "Colorado": "Denver", "Washington DC": "Washington",
                         "Washington, DC": "Washington",
                         "London": "New York", "Toronto": "New York", "China": "New York", "Tokyo": "New York",
-                        "Sydney, Australia": "New York"}, inplace=True)
+                        "Sydney, Australia": "New York", "Dallas ": "Dallas"}, inplace=True)
 
 unfound_cities = []
 for x in df.target_city.unique():
@@ -63,7 +63,12 @@ assert len(unfound_cities) == 0, "Some locations without corresponding locations
 ### clustering based on locations
 # define hub city
 # TODO: in the future, automate hub selection
-HUBS = {"New York": None, "San Francisco": None, "Chicago": None} # using these locations to approximate east, west and central
+# HUBS = {"New York": None, "San Francisco": None, "Chicago": None} # using these locations to approximate east, west and central
+HUBS = {"New York": None, "San Francisco": None,
+        "Chicago": None, "Los Angeles": None,
+        "Seattle": None, "Boston": None}
+
+
 
 # get coordinates
 for k in HUBS:
@@ -225,7 +230,7 @@ prev_match = prev_match.dropna(how='all', axis=1)
 
 # define min number of matches for every person
 HETERO_MIN_MATCH = 2 # NOTE: this is a parameter defined by user
-HOMO_MIN_MATCH = 2 # NOTE: this is a parameter defined by user
+HOMO_MIN_MATCH = 3 # NOTE: this is a parameter defined by user
 
 
 # initialize matched_group
@@ -346,9 +351,13 @@ columns = ["match_{}".format(i+1) for i in range(len(output_df.columns))]
 output_df.columns = columns
 output_df.index.set_names("emailee", inplace=True)
 
+# output intermediate list for debugging purposes
+output_df.to_csv("debugging_output.csv")
+
+
 # output master match df
 DATE = '2020-05-16'
-ROUND = 'Round X'
+ROUND = 'Round 8'
 
 master_match_df = {}
 master_match_df['To'] = []
@@ -360,7 +369,7 @@ for index, row in output_df.iterrows():
     master_match_df['From']+= match_list
     master_match_df['To']+=[index for _ in range(len(match_list))]
     master_match_df['Date'] = DATE
-    master_match_df['Round'] = ROUND    
+    master_match_df['Round'] = ROUND
 pd.DataFrame(master_match_df).to_csv("master_match_new_batch.csv", index=False)
 
 
@@ -371,6 +380,7 @@ tmp = tmp.dropna(how='all', axis=0)
 tmp = tmp.dropna(how='all', axis=1)
 tmp.columns = ["personal_email", "anon_email", "gender", "interested_gender", "business_school", "year", "target_city", "interest", "age"]
 tmp = tmp.drop_duplicates(subset='anon_email', keep="last")
+tmp.fillna("", inplace=True)
 
 # anon email replacement
 emailee_replacement = tmp[["anon_email", "personal_email"]].set_index("anon_email")
