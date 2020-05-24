@@ -4,20 +4,32 @@
 """
 Written for MBA Love is Blind. Script to generate dating matching.
 
-May 16 Update:
-1. Fix bug in output list - showing interest.
-2. Add .edu email as emailee.
-3. Output Master match list using anonymous email. Separate master match list for the new batch. Include match both directions.
-4. Two MIN_MATCH thresholds, one for heterosexual group the other for homosexual group.
+May 23 Update:
+1. Added anonymous email in output
+2. Handled outputting apostrophe
+3. Randomly assign bisexual to a gender group instead of to both
+4. Handling people that put multiple locations as Target City
 """
 
 from random import randrange, choice
+from math import ceil
+
 import pandas as pd
 
 __author__ = "Huey Huilong Han"
-__date__ = "Last Update: May 16, 2020."
+__date__ = "May 23, 2020."
 
-###### load data and basic cleaning #####
+
+###### define parameters for the script ######
+HETERO_MIN_MATCH = 2
+HOMO_MIN_MATCH = 3
+MAX_MATCH = 5
+LOC_REPLACEMENT = {"San Francisco / Bay Area": "San Francisco", "Washington DC": "Washington",
+                "London": "New York", "Toronto": "New York", "Florida": "Miami", "Southeast": "Charlotte",
+                "East Coast": "New York", "Canada": "Chicago", "toronto": "Chicago"}
+HUBS = ["New York", "San Francisco", "Chicago", "Los Angeles", "Seattle", "Boston"]
+
+###### load data and basic cleaning ######
 # read in data
 df = pd.read_csv("raw.csv")
 
@@ -31,44 +43,28 @@ df.columns = ["personal_email", "anon_email", "gender", "interested_gender", "bu
 # drop duplicates - some people enter the form twice
 df = df.drop_duplicates(subset='anon_email', keep="last")
 
+# set anon_email as index
+df.set_index("anon_email", inplace=True, drop=False)
 
-
-###### wrangle locations #####
+###### wrangle locations ######
 # TODO: currently manually wrangling locations
 # need to improve Google Form to automate this
 # load city coordinates
 city_coordinates = pd.read_csv("uscities_coordinates/uscities.csv")
 city_coordinates = city_coordinates[city_coordinates.population > 300000]
 
-unfound_cities = []
-for x in df.target_city.unique():
-    if x not in city_coordinates.city.to_list() and x != "Undecided" and x != "Location does not matter":
-        unfound_cities.append(x)
+df.target_city = df.target_city.apply(lambda x: [x.strip() for x in x.split(",")])
 
-df.target_city.replace({"San Francisco / Bay Area": "San Francisco", "Philly": "Philadelphia",
-                        "Atlanta, DC, Houston": "Atlanta", "New York or San Francisco": "New York",
-                        "Phoenix / Scottsdale": "Phoenix", "Colorado": "Denver", "Washington DC": "Washington",
-                        "Washington, DC": "Washington",
-                        "London": "New York", "Toronto": "New York", "China": "New York", "Tokyo": "New York",
-                        "Sydney, Australia": "New York", "Dallas ": "Dallas"}, inplace=True)
+# replace locations
+for index, row in df.iterrows():
+    for i, c in enumerate(row["target_city"]):
+        if c not in city_coordinates.city.to_list() and c != "Undecided" and c != "Location does not matter":
+            row["target_city"][i] = LOC_REPLACEMENT[c]
 
-unfound_cities = []
-for x in df.target_city.unique():
-    if x not in city_coordinates.city.to_list() and x != "Undecided" and x != "Location does not matter":
-        unfound_cities.append(x)
-assert len(unfound_cities) == 0, "Some locations without corresponding locations still exist!"
-
-
-
-### clustering based on locations
+###### clustering based on locations ######
 # define hub city
 # TODO: in the future, automate hub selection
-# HUBS = {"New York": None, "San Francisco": None, "Chicago": None} # using these locations to approximate east, west and central
-HUBS = {"New York": None, "San Francisco": None,
-        "Chicago": None, "Los Angeles": None,
-        "Seattle": None, "Boston": None}
-
-
+HUBS = {location:None for location in HUBS}
 
 # get coordinates
 for k in HUBS:
@@ -76,41 +72,59 @@ for k in HUBS:
     HUBS[k] = (tmp.lat.values[0], tmp.lng.values[0])
 
 # clustering cities into hub cities
-clustering = {}
-for x in df.target_city.unique():
-    if x in HUBS or x == "Undecided" or x == "Location does not matter":
-        continue
-    else:
-        min_dist = 9999
-        min_city = None
-        tmp_lat = city_coordinates[city_coordinates.city == x].lat.values[0]
-        tmp_lng = city_coordinates[city_coordinates.city == x].lng.values[0]
-        for hub in HUBS:
-            tmp_dist = (abs(tmp_lat - HUBS[hub][0]) + abs(tmp_lng - HUBS[hub][1]))
-            if tmp_dist < min_dist:
-                min_dist = tmp_dist
-                min_city = hub
-        clustering[x] = min_city
+for loc in df.target_city:
+    for i, x in enumerate(loc):
+        if x == "Undecided" or x == "Location does not matter":
+            if len(loc) > 1:
+                continue
+            else:
+                loc[i] = choice(list(HUBS.keys()))
+        else:
+            min_dist = 9999
+            min_city = None
+            tmp_lat = city_coordinates[city_coordinates.city == x].lat.values[0]
+            tmp_lng = city_coordinates[city_coordinates.city == x].lng.values[0]
+            for hub in HUBS:
+                tmp_dist = (abs(tmp_lat - HUBS[hub][0]) + abs(tmp_lng - HUBS[hub][1]))
+                if tmp_dist < min_dist:
+                    min_dist = tmp_dist
+                    min_city = hub
+            loc[i] = min_city
+    
+    if "Undecided" in loc:
+        loc.remove("Undecided")
+    
+    if "Location does not matter" in loc:
+        loc.remove("Location does not matter")
+    
+# dedupe target_city
+df.target_city = df.target_city.apply(lambda x: list(set(x)))
 
-# clustering
-df.target_city.replace(clustering, inplace=True)
 
-# randomly assign "undecided" and "location does not matter" to hub
-# TODO: need to discuss this with Anna
-for index, row in df[(df.target_city == "Undecided") | (df.target_city == "Location does not matter")].iterrows():
-    rand_hub = choice(list(HUBS.keys()))
-    df.loc[index, 'target_city'] = rand_hub
+# randomly assign bisexual people
+# figure out people's minimum match threshold
+for index, row in df.iterrows():
+    if row["interested_gender"] == "Interested in Both":
+        row["interested_gender"] = choice(["Interested in Females, Interested in Males"])
+
+df["min_match"] = 0
+for index, row in df.iterrows():
+    if row["gender"] == "Male" and row["interested_gender"] == "Interested in Females":
+        df.loc[index, "min_match"] = HETERO_MIN_MATCH
+    elif row["gender"] == "Female" and row["interested_gender"] == "Interested in Males":
+        df.loc[index, "min_match"] = HETERO_MIN_MATCH
+    elif row["gender"] == "Male" and row["interested_gender"] == "Interested in Males":
+        df.loc[index, "min_match"] = HOMO_MIN_MATCH
+    elif row["gender"] == "Female" and row["interested_gender"] == "Interested in Females":
+        df.loc[index, "min_match"] = HOMO_MIN_MATCH
 
 # create clusering groups
 location_groups = {}
-for l in df.target_city.unique():
-    location_groups[l] = df[df.target_city == l]
-
-# check if size matches original dataframe
-assert sum([location_groups[x].shape[0] for x in location_groups]) == df.shape[0], "The sum of location subgroups does not match the original data!"
+for l in HUBS.keys():
+    location_groups[l] = df[df.target_city.apply(lambda x: l in x)]
 
 
-###### divide into gender-based groups #####
+###### divide into gender-based groups ######
 # define groups based on interested and interested_gender group
 gender_loc_groups = {}
 
@@ -120,31 +134,22 @@ for l in location_groups:
     tmp = location_groups[l]
     
     # get heterosexual group
-    hetero = tmp[((tmp.gender == "Male") & (tmp.interested_gender == "Female")) | ((tmp.gender == "Female") & (tmp.interested_gender == "Male"))]    
+    hetero = tmp[((tmp.gender == "Male") & (tmp.interested_gender == "Interested in Females")) | ((tmp.gender == "Female") & (tmp.interested_gender == "Interested in Males"))]    
     key = l + "_heterosexual"
     gender_loc_groups[key] = hetero
     
     # get male-male group
-    male_male = tmp[(tmp.gender == "Male") & (tmp.interested_gender == "Male")]
+    male_male = tmp[(tmp.gender == "Male") & (tmp.interested_gender == "Interested in Males")]
     key = l + "_male-male"
     gender_loc_groups[key] = male_male
     
     # get female-female group
-    female_female = tmp[(tmp.gender == "Female") & (tmp.interested_gender == "Female")]
+    female_female = tmp[(tmp.gender == "Female") & (tmp.interested_gender == "Interested in Females")]
     key = l + "_female-female"
     gender_loc_groups[key] = female_female
 
-    # get both group
-    ### TODO: figure out where to put "both" in the above category
-    both = tmp[tmp.interested_gender == "Both"]
-    key = l + "_both"
-    gender_loc_groups[key] = both
 
-# check if size matches original dataframe
-assert sum([gender_loc_groups[x].shape[0] for x in gender_loc_groups]) == df.shape[0], "The sum of gender subgroups does not match the original data!"
-
-
-###### certain groups are too small, if so, merge to another group #####
+###### certain groups are too small, if so, merge to another group ######
 
 THRESHOLD = 10 # NOTE: this is a parameter to be defined by user
 
@@ -181,45 +186,7 @@ for x in list(gender_loc_groups):
 if male_male is not None:
     gender_loc_groups["Other_male-male"] = male_male
 
-# check if size matches original dataframe
-assert sum([gender_loc_groups[x].shape[0] for x in gender_loc_groups]) == df.shape[0], "The sum of gender subgroups does not match the original data!"
-
-# assign both to local heterosexual and corresponding gender group
-# e.g. New York male who clicked "both" would be assigned to New York hetero and New York male-male
-# New York female who clicked "both" would be assigned to New York hetero and New York female-female
-# TODO: discuss this with Anna
-for x in list(gender_loc_groups):
-    if x.split("_")[1] == "both":
-        # get dataframe
-        tmp = gender_loc_groups[x]
-        
-        # extract location
-        location = x.split("_")[0]
-        
-        # add to heterosexual group of that location
-        new_x = location + "_heterosexual"
-        gender_loc_groups[new_x] = pd.concat([gender_loc_groups[new_x], tmp])
-        
-        for index, row in tmp.iterrows():
-            if row.gender == "Male": # if male, add to male-male group of that location
-                new_x = location + "_male-male"
-                if new_x in gender_loc_groups.keys():
-                    gender_loc_groups[new_x] = pd.concat([gender_loc_groups[new_x], tmp])
-                else: # if that location does not exist, add to "Other_male-male group"
-                    new_x = location + "Other_male-male"
-                    gender_loc_groups[new_x] = pd.concat([gender_loc_groups[new_x], tmp])
-            
-            elif row.gender == "Female": # if female, add to female-female group
-                new_x = "All_female-female"
-                gender_loc_groups[new_x] = pd.concat([gender_loc_groups[new_x], tmp])
-            else:
-                raise ValueError("Gender not recognized!")
-        
-        # delete this group from the dictionary
-        del gender_loc_groups[x]
-
-
-###### generate matching for each location-gender based group #####
+###### generate matching for each location-gender based group ######
 
 # load previous match
 prev_match = pd.read_csv("master_match_list.csv")
@@ -228,21 +195,15 @@ prev_match = pd.read_csv("master_match_list.csv")
 prev_match = prev_match.dropna(how='all', axis=0)
 prev_match = prev_match.dropna(how='all', axis=1)
 
-# define min number of matches for every person
-HETERO_MIN_MATCH = 2 # NOTE: this is a parameter defined by user
-HOMO_MIN_MATCH = 3 # NOTE: this is a parameter defined by user
-
 
 # initialize matched_group
 matched_group = {}
 
+# initialize match in original df to keep track of matches
+df['match'] = [[] for _ in range(df.shape[0])]
+
 # iterate over gender_loc_groups
 for g in gender_loc_groups:
-    if g.split("_")[1] == "heterosexual":
-        min_match = HETERO_MIN_MATCH
-    else:
-        min_match = HOMO_MIN_MATCH
-    
     # get dataframe
     tmp = gender_loc_groups[g]
         
@@ -253,8 +214,8 @@ for g in gender_loc_groups:
     if g.split("_")[1] == "heterosexual":
         
         # get people
-        males = tmp[tmp.gender == "Male"].anon_email.to_list()
-        females = tmp[tmp.gender == "Female"].anon_email.to_list()
+        males = list(set(tmp[tmp.gender == "Male"].anon_email.to_list()))
+        females = list(set(tmp[tmp.gender == "Female"].anon_email.to_list()))
         
         # calculate male-female ratio to generate dataframe
         # rows are always >= cols
@@ -272,23 +233,27 @@ for g in gender_loc_groups:
     # process other groups
     else:
         # get people
-        people = tmp.anon_email.to_list()
+        people = list(set(tmp.anon_email.to_list()))
         
         # generate adjacency matrix
         mat = pd.DataFrame(index=people, columns=people)
         n_row = mat.shape[0]
         n_col = mat.shape[1]
-        
+
     ##### generate solution #####
     
     # randomly shuffle the data
     mat = mat.sample(frac=1)
 
     # generate col num range to iterate over
-    tmp_index = list(range(mat.shape[1])) * (100 * min_match) # debug
+    tmp_index = list(range(mat.shape[1])) * 1000
     
     # iterate on rows
     for index, row in mat.iterrows():
+        # calculate min match for this person
+        person = df[df.anon_email == index]
+        min_match = ceil((person["min_match"].iloc[0]) / len(person["target_city"].iloc[0]))
+        
         # iterate over index list
         for i in tmp_index:
 
@@ -306,28 +271,37 @@ for g in gender_loc_groups:
             if prev_match[(prev_match.To == p1) & (prev_match.From == p2)].shape[0] != 0:
                 continue
             
-            # pass if it's non-heterosexual and the other person has too many matches
-            if g.split("_")[1] != "heterosexual":
-                if mat[row.index[i]].sum() > min_match:
-                    continue
+            # pass if this match exists in this round
+            if p2 in df.loc[p1, "match"]:
+                continue
+            
+            # pass if the other person has too many matches
+            if len(df.loc[p2, "match"]) > MAX_MATCH-1:
+                continue
+            
+            # break loop if this person has too many matches
+            if len(df.loc[p1, "match"]) >= MAX_MATCH:
+                break            
 
-            # if all conditions pass, add matching to adjacency matrix
-            mat.loc[index, row.index[i]] = 1
+            # if all conditions pass, add matching to adjacency matrix and pandas dataframe
+            mat.loc[p1, p2] = 1
             if g.split("_")[1] != "heterosexual":
-                mat.loc[row.index[i], index] = 1
+                mat.loc[p2, p1] = 1
+            
+            df.loc[p1, "match"].append(p2)
+            df.loc[p2, "match"].append(p1)
 
             # remove index from tmp_index
             tmp_index.remove(i)
-            
+
     # add to matched group
     matched_group[g] = mat
 
-    
-###### generate output dataframe for emailing #####
+# ###### generate output dataframe for emailing ######
 
 output_df = {}
 
-for g in matched_group:    
+for g in matched_group:
     for index, row in matched_group[g].iterrows():
         if index not in output_df.keys():
             output_df[index] = set(row.dropna().index.to_list()) # using set to ensure unique values
@@ -385,6 +359,10 @@ tmp.fillna("", inplace=True)
 # anon email replacement
 emailee_replacement = tmp[["anon_email", "personal_email"]].set_index("anon_email")
 emailee_replacement = emailee_replacement.to_dict()['personal_email']
+output_df["emailee_anon_email"] = output_df.index
+cols = output_df.columns.tolist()
+cols = cols[-1:] + cols[:-1]
+output_df = output_df[cols]
 output_df.index = output_df.index.map(lambda x: emailee_replacement[x])
 
 # construct concat string
@@ -394,7 +372,7 @@ tmp = tmp["concat_info"]
 tmp = tmp.transpose().to_dict()
 
 # replace values
-output_df.replace(tmp, inplace=True)
+output_df.iloc[:, 1:].replace(tmp, inplace=True)
 
-###### writing to disk #####
-output_df.to_csv("output.csv")
+# # writing to disk
+output_df.to_csv("output.csv", encoding='utf-8-sig')
