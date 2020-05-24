@@ -75,10 +75,7 @@ for k in HUBS:
 for loc in df.target_city:
     for i, x in enumerate(loc):
         if x == "Undecided" or x == "Location does not matter":
-            if len(loc) > 1:
-                continue
-            else:
-                loc[i] = choice(list(HUBS.keys()))
+            loc[i] = choice(list(HUBS.keys()))
         else:
             min_dist = 9999
             min_city = None
@@ -105,7 +102,7 @@ df.target_city = df.target_city.apply(lambda x: list(set(x)))
 # figure out people's minimum match threshold
 for index, row in df.iterrows():
     if row["interested_gender"] == "Interested in Both":
-        row["interested_gender"] = choice(["Interested in Females, Interested in Males"])
+        row["interested_gender"] = choice(["Interested in Females", "Interested in Males"])
 
 df["min_match"] = 0
 for index, row in df.iterrows():
